@@ -25,16 +25,17 @@ def parse_image_uri(image_uri: str):
 
 class LambdaCronStack(Stack):
     def __init__(
-        self,
-        scope: Construct,
-        construct_id: str,
-        *,
-        function_name: str,
-        image_uri: str,
-        schedule_expression: str,
-        memory_size: int = 512,
-        timeout_seconds: int = 60,
-        **kwargs,
+            self,
+            scope: Construct,
+            construct_id: str,
+            *,
+            function_name: str,
+            image_uri: str,
+            schedule_expression: str,
+            memory_size: int = 512,
+            timeout_seconds: int = 60,
+            environment: dict = None,
+            **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -48,6 +49,7 @@ class LambdaCronStack(Stack):
             code=_lambda.DockerImageCode.from_ecr(repository=repository, tag_or_digest=tag),
             timeout=Duration.seconds(timeout_seconds),
             memory_size=memory_size,
+            environment=environment or {},
         )
 
         rule = events.Rule(

@@ -1,3 +1,4 @@
+import json
 import os
 
 from aws_cdk import App
@@ -13,6 +14,11 @@ image_uri = app.node.try_get_context("image_uri")
 memory_size = int(app.node.try_get_context("memory_size") or 512)
 timeout_seconds = int(app.node.try_get_context("timeout_seconds") or 60)
 
+# Lambda environment variables are passed in as a JSON string via
+# `-c environment='{"KEY":"value"}'` since CDK context values are strings.
+environment_json = app.node.try_get_context("environment") or "{}"
+lambda_environment = json.loads(environment_json)
+
 env = {
     "account": os.environ.get("CDK_DEFAULT_ACCOUNT"),
     "region": os.environ.get("CDK_DEFAULT_REGION"),
@@ -27,6 +33,7 @@ if deploy_type == "cron":
         schedule_expression=schedule_expression,
         memory_size=memory_size,
         timeout_seconds=timeout_seconds,
+        environment=lambda_environment,
         env=env,
     )
 elif deploy_type == "api":
@@ -36,6 +43,7 @@ elif deploy_type == "api":
         image_uri=image_uri,
         memory_size=memory_size,
         timeout_seconds=timeout_seconds,
+        environment=lambda_environment,
         env=env,
     )
 else:

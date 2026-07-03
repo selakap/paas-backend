@@ -14,15 +14,16 @@ from stacks.lambda_cron_stack import parse_image_uri
 
 class LambdaApiStack(Stack):
     def __init__(
-        self,
-        scope: Construct,
-        construct_id: str,
-        *,
-        function_name: str,
-        image_uri: str,
-        memory_size: int = 512,
-        timeout_seconds: int = 30,
-        **kwargs,
+            self,
+            scope: Construct,
+            construct_id: str,
+            *,
+            function_name: str,
+            image_uri: str,
+            memory_size: int = 512,
+            timeout_seconds: int = 30,
+            environment: dict = None,
+            **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -36,6 +37,7 @@ class LambdaApiStack(Stack):
             code=_lambda.DockerImageCode.from_ecr(repository=repository, tag_or_digest=tag),
             timeout=Duration.seconds(timeout_seconds),
             memory_size=memory_size,
+            environment=environment or {},
         )
 
         integration = integrations.HttpLambdaIntegration("Integration", fn)
