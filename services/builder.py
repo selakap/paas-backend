@@ -1,13 +1,31 @@
 import base64
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import uuid
 
 import boto3
 
+from services import sonar_scan
+
 ecr_client = boto3.client("ecr")
+
+
+def _clear_readonly_and_retry(func, path, exc_info):
+    """
+    shutil.rmtree error handler for Windows: git marks files under
+    .git/objects as read-only, which plain shutil.rmtree can't delete
+    (unlike `Remove-Item -Force`, which clears the attribute automatically).
+    This clears the read-only bit and retries the failed operation.
+    """
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def safe_rmtree(path: str) -> None:
+    shutil.rmtree(path, onerror=_clear_readonly_and_retry)
 
 
 def clone_repo(repo_url: str, branch: str = "main", commit: str = None) -> str:
@@ -22,14 +40,14 @@ def clone_repo(repo_url: str, branch: str = "main", commit: str = None) -> str:
 
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        safe_rmtree(tmp_dir)
         raise RuntimeError(f"git clone failed: {(result.stderr or '').strip()}")
 
     if commit:
         checkout_cmd = ["git", "-C", tmp_dir, "checkout", commit]
         result = subprocess.run(checkout_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            safe_rmtree(tmp_dir)
             raise RuntimeError(
                 f"git checkout of commit '{commit}' failed (it may be older than the "
                 f"last 50 commits on '{branch}'): {(result.stderr or '').strip()}"
@@ -60,11 +78,20 @@ def docker_login(registry: str) -> None:
         raise RuntimeError(f"docker login failed: {result.stderr.strip()}")
 
 
-def build_and_push(repo_url: str, branch: str, function_name: str, subdir: str = None, commit: str = None) -> dict:
+def build_and_push(
+        repo_url: str,
+        branch: str,
+        function_name: str,
+        subdir: str = None,
+        commit: str = None,
+        run_sonar: bool = False,
+        block_on_quality_gate_failure: bool = True,
+) -> dict:
     """
-    Clones the repo, builds the Dockerfile found at repo (or repo/subdir) root,
-    tags it, pushes to an ECR repo named after function_name, and returns the
-    image URI / ARN info needed by the deploy endpoints.
+    Clones the repo (optionally at a specific commit), optionally runs a
+    SonarCloud scan, builds the Dockerfile found at repo (or repo/subdir)
+    root, tags it, pushes to an ECR repo named after function_name, and
+    returns the image URI / ARN info needed by the deploy endpoints.
 
     Assumes the Dockerfile already targets a Lambda base image
     (e.g. FROM public.ecr.aws/lambda/python:3.12) — this service does not
@@ -79,6 +106,24 @@ def build_and_push(repo_url: str, branch: str, function_name: str, subdir: str =
                 f"No Dockerfile found at '{dockerfile_path}'. "
                 "The repo must contain a Lambda-compatible Dockerfile."
             )
+
+        sonar_result = None
+        if run_sonar:
+            if not sonar_scan.is_configured():
+                raise RuntimeError(
+                    "Sonar scan was requested but SONAR_TOKEN / SONAR_ORGANIZATION "
+                    "are not configured on the server."
+                )
+            sonar_result = sonar_scan.run_scan(
+                source_dir=build_dir,
+                project_key=function_name.lower(),
+                project_name=function_name,
+            )
+            if block_on_quality_gate_failure and sonar_result["quality_gate_status"] == "ERROR":
+                raise RuntimeError(
+                    f"SonarCloud Quality Gate failed for '{function_name}'. "
+                    f"Review findings at: {sonar_result.get('dashboard_url')}"
+                )
 
         repo_name = function_name.lower()
         repository = ensure_ecr_repo(repo_name)
@@ -98,11 +143,14 @@ def build_and_push(repo_url: str, branch: str, function_name: str, subdir: str =
         if result.returncode != 0:
             raise RuntimeError(f"docker push failed:\n{result.stderr.strip()}")
 
-        return {
+        response = {
             "image_uri": image_uri,
             "image_tag": image_tag,
             "repository_arn": repository["repositoryArn"],
             "repository_uri": repository["repositoryUri"],
         }
+        if sonar_result:
+            response["sonar_scan"] = sonar_result
+        return response
     finally:
-        shutil.rmtree(build_dir, ignore_errors=True)
+        safe_rmtree(build_dir)

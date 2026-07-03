@@ -4,6 +4,25 @@ import subprocess
 import tempfile
 
 
+def get_branch_head_sha(repo_url: str, branch: str) -> str:
+    """
+    Resolves a branch to its current HEAD commit SHA via `git ls-remote`,
+    without cloning. Used when a request doesn't specify an exact commit —
+    the approval gate always checks against a concrete SHA, never a
+    moving branch pointer.
+    """
+    cmd = ["git", "ls-remote", "--heads", repo_url, branch]
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise RuntimeError(f"git ls-remote failed: {(result.stderr or '').strip()}")
+
+    line = result.stdout.strip()
+    if not line:
+        raise RuntimeError(f"Branch '{branch}' not found in {repo_url}")
+
+    return line.split()[0]
+
+
 def list_branches(repo_url: str) -> list[str]:
     """
     Uses `git ls-remote --heads` to list branch names without cloning.
