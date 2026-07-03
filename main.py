@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from services.builder import build_and_push
 from services.cdk_deploy import run_cdk_deploy
+from services.git_info import list_branches, list_commits
 
 import logging
 from fastapi.middleware.cors import CORSMiddleware
@@ -110,6 +111,21 @@ def deploy_api(req: ApiDeployRequest):
         outputs = run_cdk_deploy(context, stack_name)
         logger.info(f"API deploy completed successfully: {outputs}")
         return {"status": "success", "stack_name": stack_name, "outputs": outputs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/repo/branches")
+def get_branches(repo_url: str):
+    try:
+        return {"branches": list_branches(repo_url)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/repo/commits")
+def get_commits(repo_url: str, branch: str = "main"):
+    try:
+        return {"commits": list_commits(repo_url, branch)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

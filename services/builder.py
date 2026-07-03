@@ -10,13 +10,31 @@ import boto3
 ecr_client = boto3.client("ecr")
 
 
-def clone_repo(repo_url: str, branch: str = "main") -> str:
+def clone_repo(repo_url: str, branch: str = "main", commit: str = None) -> str:
     tmp_dir = tempfile.mkdtemp(prefix="paas-build-")
-    cmd = ["git", "clone", "--depth", "1", "--branch", branch, repo_url, tmp_dir]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if commit:
+        # Need real history to check out an arbitrary commit, so no --depth 1.
+        # depth 50 covers the same window the /repo/commits dropdown shows.
+        cmd = ["git", "clone", "--branch", branch, "--single-branch", "--depth", "50", repo_url, tmp_dir]
+    else:
+        cmd = ["git", "clone", "--depth", "1", "--branch", branch, repo_url, tmp_dir]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise RuntimeError(f"git clone failed: {result.stderr.strip()}")
+        raise RuntimeError(f"git clone failed: {(result.stderr or '').strip()}")
+
+    if commit:
+        checkout_cmd = ["git", "-C", tmp_dir, "checkout", commit]
+        result = subprocess.run(checkout_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise RuntimeError(
+                f"git checkout of commit '{commit}' failed (it may be older than the "
+                f"last 50 commits on '{branch}'): {(result.stderr or '').strip()}"
+            )
+
     return tmp_dir
 
 
@@ -42,7 +60,7 @@ def docker_login(registry: str) -> None:
         raise RuntimeError(f"docker login failed: {result.stderr.strip()}")
 
 
-def build_and_push(repo_url: str, branch: str, function_name: str, subdir: str = None) -> dict:
+def build_and_push(repo_url: str, branch: str, function_name: str, subdir: str = None, commit: str = None) -> dict:
     """
     Clones the repo, builds the Dockerfile found at repo (or repo/subdir) root,
     tags it, pushes to an ECR repo named after function_name, and returns the
@@ -52,7 +70,7 @@ def build_and_push(repo_url: str, branch: str, function_name: str, subdir: str =
     (e.g. FROM public.ecr.aws/lambda/python:3.12) — this service does not
     inspect or rewrite the Dockerfile.
     """
-    build_dir = clone_repo(repo_url, branch)
+    build_dir = clone_repo(repo_url, branch, commit)
     try:
         context_dir = os.path.join(build_dir, subdir) if subdir else build_dir
         dockerfile_path = os.path.join(context_dir, "Dockerfile")
