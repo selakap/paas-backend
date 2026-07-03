@@ -7,6 +7,7 @@ from services.builder import build_and_push
 from services.cdk_deploy import run_cdk_deploy
 
 import logging
+from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,6 +18,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="PaaS POC Backend", version="0.1.0")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------- Request models ----------
 
