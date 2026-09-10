@@ -14,6 +14,18 @@ Local FastAPI backend with 3 flows:
 
 - Python 3.10+
 - Docker running locally (used for `docker build` / `docker push`)
+
+  > **Deployment note:** this is the one dependency that blocks running the
+  > API on AWS Fargate — Fargate doesn't support Docker-in-Docker, so a
+  > Fargate-hosted API can't shell out to `docker build` itself. If you want
+  > a Fargate-friendly deployment, consider offloading the build step to
+  > **AWS CodeBuild** (managed, privileged build containers that build and
+  > push to ECR) and having `/build` call `StartBuild` + poll for
+  > completion instead of running `docker` locally. That removes the local
+  > Docker requirement entirely and would let the whole app (including the
+  > Sonar scan, which has no such constraint) run on Fargate instead of
+  > requiring an EC2-backed host.
+
 - AWS CLI configured with credentials (`aws configure`) that have permissions
   for ECR, Lambda, EventBridge, API Gateway, IAM, CloudFormation
 - Node.js + AWS CDK CLI: `npm install -g aws-cdk`
@@ -317,6 +329,32 @@ paas-backend/
       lambda_cron_stack.py      # DockerImageFunction + EventBridge rule
       lambda_api_stack.py       # DockerImageFunction + HTTP API
 ```
+
+## Porting to other stacks (e.g. .NET, Java)
+
+None of this app's logic is actually Python-specific — it's almost entirely
+CLI orchestration (`git`, `docker`, `cdk`, `sonar-scanner`) plus AWS SDK
+calls and HTTP polling, all of which have direct equivalents in other
+runtimes. If you have an existing ASP.NET Core or Spring Boot app and want
+to add this as new controllers instead of running a separate Python
+service:
+
+| This app (Python)                          | .NET equivalent                                              | Java equivalent                                                   |
+|----------------------------------------------|-----------------------------------------------------------------|------------------------------------------------------------------|
+| `subprocess.run([...])`                     | `System.Diagnostics.Process.Start(...)`                        | `java.lang.ProcessBuilder`                                        |
+| `boto3` (ECR, Lambda, EventBridge, API GW)  | `AWSSDK.ECR`, `AWSSDK.Lambda`, `AWSSDK.CloudFormation`, etc.     | AWS SDK for Java v2 (`software.amazon.awssdk:ecr`, `:lambda`, `:cloudformation`, etc.) |
+| `requests` (SonarCloud API polling)         | `HttpClient`                                                    | `java.net.http.HttpClient`                                        |
+| FastAPI endpoints / Pydantic models         | ASP.NET Core controllers / DTOs with data annotations           | Spring `@RestController` / DTOs with `jakarta.validation` annotations |
+| `cdk` CLI shelled out from `cdk_deploy.py`  | Same — `cdk deploy` shelled out via `Process.Start`, or a CDK app written in C# (CDK supports C# as a first-class language) | Same — `cdk deploy` shelled out via `ProcessBuilder`, or a CDK app written in Java (also a first-class CDK language) |
+
+The one dependency that doesn't go away: the **CDK CLI is Node.js-based**
+regardless of which language you write the stacks in, so `cdk deploy` still
+requires Node.js on the host/container even for a C#/Java CDK app — you'd
+add Node.js to the runtime image, not write any Node.js code. Everything
+else (Docker, git, Sonar) is just an external binary invocation either way,
+so the language you write the API layer in doesn't change what has to be
+installed alongside it — see the Fargate note under
+[Prerequisites](#prerequisites) for how that interacts with hosting choices.
 
 ## POC notes / shortcuts taken
 
