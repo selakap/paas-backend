@@ -21,6 +21,9 @@ Local FastAPI backend with 3 flows:
   ```
   cdk bootstrap aws://ACCOUNT_ID/REGION
   ```
+- (Optional) SonarCloud scanning — see [SonarCloud scanning](#sonarcloud-scanning)
+  below. Only needed if you want to run `run_sonar: true` on `/build` or use
+  the `/approvals` flow.
 
 ## Running locally, from scratch
 
@@ -213,6 +216,89 @@ curl -X POST http://localhost:8000/deploy/api \
 Both deploy endpoints return the stack's `CfnOutput`s (e.g. `FunctionArn`,
 `ApiUrl`) as JSON.
 
+## SonarCloud scanning
+
+`services/sonar_scan.py` wraps the `sonar-scanner` CLI and polls SonarCloud
+for the Quality Gate result. It's used in two places:
+
+- `POST /build` — pass `"run_sonar": true` (and optionally
+  `"block_on_quality_gate_failure": true|false`, default `true`) to scan the
+  cloned source before the Docker build. If the Quality Gate fails and
+  blocking is on, the build is aborted with an error pointing at the
+  dashboard URL. The result (if run) is included under `sonar_scan` in the
+  response.
+- `POST /approvals` — if Sonar is configured (see below), an approval
+  request automatically kicks off a scan in a background thread after the
+  response is returned. Poll `GET /approvals/{id}` and watch
+  `sonar_scan_status` move from `running` to `completed`/`failed`, alongside
+  `sonar_quality_gate` and `sonar_dashboard_url`.
+
+If Sonar env vars aren't set, `run_sonar: true` on `/build` fails fast with a
+clear error, and `/approvals` simply skips scanning (`sonar_scan_status:
+"not_requested"`) — it's entirely optional.
+
+### 1. Install the SonarScanner CLI
+
+The scanner requires a JRE 17+ on PATH, plus the `sonar-scanner` binary
+itself:
+
+- **All platforms**: download from
+  https://docs.sonarsource.com/sonarqube-cloud/advanced-setup/ci-based-analysis/sonarscanner-cli/
+  and add the `bin/` folder to your `PATH`.
+- **macOS**: `brew install sonar-scanner`
+- **Windows**: unzip the CLI distribution somewhere permanent and add its
+  `bin` directory to `PATH` (System Properties → Environment Variables), or
+  `choco install sonarscanner-msbuild-net5` if you use Chocolatey.
+
+Verify it's on PATH:
+
+```bash
+sonar-scanner --version
+```
+
+### 2. Create a SonarCloud account, org, and token
+
+1. Sign up / log in at https://sonarcloud.io and create (or pick) an
+   organization — this is your `SONAR_ORGANIZATION`.
+2. Generate a user token: **My Account → Security → Generate Token**.
+3. You don't need to pre-create a project — `sonar_scan.run_scan` passes
+   `sonar.projectKey` / `sonar.projectName` (derived from `function_name`)
+   and SonarCloud will create the project on first analysis if your
+   organization allows it.
+
+### 3. Set environment variables
+
+```bash
+# macOS / Linux / Git Bash
+export SONAR_TOKEN=your_sonarcloud_token
+export SONAR_ORGANIZATION=your_sonarcloud_org_key
+export SONAR_HOST_URL=https://sonarcloud.io   # optional, this is the default
+
+# Windows PowerShell
+$env:SONAR_TOKEN = "your_sonarcloud_token"
+$env:SONAR_ORGANIZATION = "your_sonarcloud_org_key"
+$env:SONAR_HOST_URL = "https://sonarcloud.io"   # optional, this is the default
+```
+
+`SONAR_TOKEN` and `SONAR_ORGANIZATION` are required for scanning to run at
+all (`sonar_scan.is_configured()` checks both); `SONAR_HOST_URL` only needs
+to be set if you're pointing at a self-hosted SonarQube instance instead of
+SonarCloud. Set these in the same shell you launch `uvicorn` from, before
+starting the server.
+
+### 4. Try it
+
+```bash
+curl -X POST http://localhost:8000/build \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repo_url": "https://github.com/your-org/your-lambda-repo.git",
+    "branch": "main",
+    "function_name": "my-cron-fn",
+    "run_sonar": true
+  }'
+```
+
 ## Project layout
 
 ```
@@ -222,6 +308,7 @@ paas-backend/
   services/
     builder.py                 # git clone -> docker build -> ECR push
     cdk_deploy.py               # shells out to `cdk deploy` with -c context, reads outputs
+    sonar_scan.py                # runs sonar-scanner, polls SonarCloud Quality Gate
   cdk/
     app.py                      # CDK entrypoint, picks stack based on context
     cdk.json

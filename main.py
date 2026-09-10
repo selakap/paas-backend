@@ -1,10 +1,11 @@
 import json
 import logging
+import re
 from typing import Dict, Literal, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from services import approvals_store, sonar_scan
 from services.builder import build_and_push, clone_repo, safe_rmtree
@@ -29,6 +30,22 @@ app.add_middleware(
 
 # ---------- Request models ----------
 
+# function_name ends up in an ECR repo name, a Lambda function name, and a CDK
+# stack ID (f"{function_name}-api-stack" / "-cron-stack"). CDK stack names must
+# match this pattern, so it's the strictest constraint of the three.
+FUNCTION_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9-]*$")
+
+
+def _sanitize_function_name(value: str) -> str:
+    cleaned = re.sub(r"\s+", "-", value.strip())
+    if not FUNCTION_NAME_PATTERN.match(cleaned):
+        raise ValueError(
+            "function_name must start with a letter and contain only letters, "
+            "digits, and hyphens (spaces are converted to hyphens automatically)"
+        )
+    return cleaned
+
+
 class BuildRequest(BaseModel):
     repo_url: str = Field(..., description="Git URL, e.g. https://github.com/org/repo.git")
     branch: str = "main"
@@ -39,6 +56,8 @@ class BuildRequest(BaseModel):
     block_on_quality_gate_failure: bool = Field(
         default=True, description="If run_sonar is true, fail the build when the Quality Gate fails"
     )
+
+    _validate_function_name = field_validator("function_name")(_sanitize_function_name)
 
 
 class CronDeployRequest(BaseModel):
@@ -53,6 +72,8 @@ class CronDeployRequest(BaseModel):
         default=None, description="Environment variables to set on the Lambda function"
     )
 
+    _validate_function_name = field_validator("function_name")(_sanitize_function_name)
+
 
 class ApiDeployRequest(BaseModel):
     function_name: str
@@ -63,6 +84,8 @@ class ApiDeployRequest(BaseModel):
         default=None, description="Environment variables to set on the Lambda function"
     )
 
+    _validate_function_name = field_validator("function_name")(_sanitize_function_name)
+
 
 class ApprovalRequestCreate(BaseModel):
     repo_url: str
@@ -71,6 +94,8 @@ class ApprovalRequestCreate(BaseModel):
     function_name: str
     requested_by: Optional[str] = None
     notes: Optional[str] = None
+
+    _validate_function_name = field_validator("function_name")(_sanitize_function_name)
 
 
 class ApprovalDecision(BaseModel):
